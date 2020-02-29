@@ -172,7 +172,7 @@
 
 (cl-defstruct (cell-weak
                (:constructor nil)
-               (:constructor cell-weak--internal-make)
+               (:constructor cell-weak--make)
                (:copier nil))
   (-inner-table (make-hash-table :test #'eq :weakness 'value) :read-only t))
 
@@ -182,7 +182,7 @@
       ;; We could also signal an error, but returning nil
       ;; allow us to treat nil as its own weak-reference,
       nil
-    (let* ((cell (cell-weak--internal-make))
+    (let* ((cell (cell-weak--make))
            (internal-ht (cell-weak--inner-table cell)))
       (puthash t inner internal-ht)
       cell)))
