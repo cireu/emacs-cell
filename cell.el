@@ -32,45 +32,46 @@
 
 ;; Currently there are 3 kinds of "Cell" in ~cell.el~
 
-;; ** Option
+;; ** Some
 
-;; A Option Cell add the "existence" information for a lisp value.
-;; A Option Cell may in 2 variant, ~Some~ variant means there's a value and
-;; ~None~ variant means there's no value.
+;; A Some Cell add the "existence" information for a lisp value.
 
-;; Option Cell is useful when writing funtion to query a collection. You can use
-;; ~None~ variant to present "Not found". When using ~nil~ to present "Not
-;;    fonud" in tranditional Lisp programming style. The caller of your query
-;; function may have mistaken on "Found and get a ~nil~ value" and "Not found".
+;; Some Cell can be united with ~nil~ value to present a nullable value.
+;; When  writing funtion to query a collection. You can use
+;; ~nil~ to present "Not found" and Some(x) to present your found value.
+;; When using ~nil~ to present "Not fonud" in tranditional Lisp programming
+;; style. The caller of your query function may hard to differentiate
+;; these two status:  "Found and get a ~nil~ value" and "Not found".
 
 ;; #+begin_src emacs-lisp
 ;; (defun clear-plist-get (plist key)
 ;;   (pcase (plist-member plist key)
 ;;     (`(,_k ,v)
-;;       (cell-option-some v))
+;;       (cell-some v))
 ;;     (_
-;;      (cell-option-none))))
+;;      nil)))
 
 ;; (let ((plist '(:key nil)))
 ;;   (plist-get plist :key)                ;=> nil
 ;;   (plist-get plist :val)                ;=> nil
 
 ;;   (clear-plist-get plist :key)          ;=> Some(nil)
-;;   (clear-plist-get plist :val)          ;=> None
+;;   (clear-plist-get plist :val)          ;=> nil
 ;;   )
 ;; #+end_src
 
-;; ~cell.el~ also provides some facility to operates on a Option Cell.
+;; ~cell.el~ also provides some facility to operates on a Some(x) | nil union.
 
 ;; #+begin_src emacs-lisp
-;; (let ((some (cell-option-some 1))
-;;       (none (cell-option-none)))
+;; (let ((some (cell-some 1))
+;;       (none nil))
 ;;   (cell-option-map some #'1+)           ;=> Some(2)
-;;   (cell-option-map none #'1+)           ;=> None
+;;   (cell-option-map none #'1+)           ;=> nil
 
-;;   (cell-option-if-let (inner some)
-;;       (message "Some(%d)" inner)
-;;     (error "Unreachable!")))
+;;   (pcase some
+;;     ((cell-some inner)
+;;      (message "Some(%d)" inner))
+;;     (_ (error "Unreachable!"))))
 ;; #+end_src
 
 ;; ** Box
@@ -79,7 +80,7 @@
 ;; storage.
 
 ;; #+begin_src emacs-lisp
-;; (let* ((box (cell-box-make "Emacs"))
+;; (let* ((box (cell-box "Emacs"))
 ;;        (lst (list box))
 ;;        (vec (vector box)))
 ;;   (cl-assert (eq (cell-box-inner (nth 0 lst))
@@ -102,7 +103,7 @@
 ;; make sure finalizer can be run as expected.
 
 ;; #+begin_src emacs-lisp
-;; (let ((weakptr (cell-weak-make (list 1 2 3 4))))
+;; (let ((weakptr (cell-weak (list 1 2 3 4))))
 ;;   (cl-assert (equal (cell-weak-get weakptr)
 ;;                     (cell-option-some (list 1 2 3 4))))
 ;;   (garbage-collect)
@@ -112,83 +113,44 @@
 ;;                     (cell-option-none))))
 ;; #+end_src
 
-;; * Contributions
-
-;; Please report an issue or PR if you encounter any problem when using the library.
-
 ;;; Code:
 
 ;;; Option
 
 (eval-when-compile (require 'cl-lib))
 
-(cl-defstruct (cell-option
+(cl-defstruct (cell-some
                (:constructor nil)
-               (:constructor cell-option--internal-make (-val))
+               (:constructor cell-some--make (-val))
                (:copier nil))
   (-val nil :read-only t))
 
 ;; Constructor
 
-(defsubst cell-option-some (value)
-  "Create an option in Some variant with VALUE."
-  (cell-option--internal-make value))
-
-(defconst cell-option--none-singleton
-  (let ((sym (make-symbol "rstream--none")))
-    (cell-option--internal-make sym)))
-
-(defsubst cell-option-none ()
-  "Create an option in None variant."
-  cell-option--none-singleton)
+;; Make a alias for a meaningful function documentation
+(defalias 'cell-some #'cell-some--make
+  "Create an option in Some variant with VALUE.
+\n(fn VALUE)")
 
 (defun cell-option-from-non-nil (value)
   "Create Some(VALUE) if VALUE if non-nil, otherwise create a None."
   (if value
-      (cell-option-some value)
-    (cell-option-none)))
-
-;; Predicator
-
-(defun cell-option-none-p (option)
-  "Return non-nil if OPTION in None variant."
-  (if (cl-typep option 'cell-option)
-      (eq option (cell-option-none))
-    (signal 'wrong-type-argument
-            (list 'cell-option option 'option))))
-
-(defsubst cell-option-some-p (option)
-  "Return non-nil if OPTION in Some variant."
-  (not (cell-option-none-p option)))
+      (cell-some value)
+    nil))
 
 ;; Operator
 
-(cl-defmacro cell-option-if-let ((var val) then &rest else)
-  "Bind the inner of VAL to VAR and yield THEN if VAL is a Some, or yield ELSE."
-  (declare (indent 2) (debug ((symbolp form) form body)))
-  (macroexp-let2 nil val val
-    `(if (cell-option-some-p ,val)
-         (let ((,var (cell-option--val ,val)))
-           ,then)
-       ,@else)))
-
-(cl-defmacro cell-option-when-let ((var val) &rest forms)
-  "Bind the inner of VAL to VAR and yield FORMS if VAL is a Some."
-  (declare (indent 1) (debug ((symbolp form) body)))
-  `(cell-option-if-let (,var ,val)
-       ,(macroexp-progn forms)))
+(eval-and-compile
+  (pcase-defmacro cell-some (inner)
+    "Match a Some(inner) value."
+    `(cl-struct cell-some (-val ,inner))))
 
 (defun cell-option-map (option func)
   "Transform the inner of OPTION using FUNC."
-  (cell-option-if-let (inner option)
-      (cell-option-some (funcall func inner))
-    option))
-
-(defalias 'cell-option-inner-unchecked 'cell-option--val
-  "Return the inner value of OPTION directly, skip status checking.
-
-It's your guarantee to ensure the OPTION is a Some to get meaningful result.
-\n(fn OPTION)")
+  (pcase-exhaustive option
+    ((cell-some inner)
+     (cell-some (funcall func inner)))
+    (`nil nil)))
 
 ;;; Box
 
@@ -198,8 +160,9 @@ It's your guarantee to ensure the OPTION is a Some to get meaningful result.
                (:copier nil))
   -inner)
 
-(defalias 'cell-box-make 'cell-box--make
-  "Create a single mutable unit with INITIAL-VALUE.")
+(defalias 'cell-box 'cell-box--make
+  "Create a single mutable unit with INITIAL-VALUE.
+\n(fn INITIAL-VALUE)")
 
 (defalias 'cell-box-inner 'cell-box--inner
   "Return the inner value of BOX.
@@ -213,21 +176,25 @@ It's your guarantee to ensure the OPTION is a Some to get meaningful result.
                (:copier nil))
   (-inner-table (make-hash-table :test #'eq :weakness 'value) :read-only t))
 
-(defun cell-weak-make (inner)
+(defun cell-weak (inner)
   "Create a cell takes a weak reference of INNER."
-  (let* ((cell (cell-weak--internal-make))
-         (internal-ht (cell-weak--inner-table cell)))
-    (puthash t inner internal-ht)
-    cell))
+  (if (null inner)
+      ;; We could also signal an error, but returning nil
+      ;; allow us to treat nil as its own weak-reference,
+      nil
+    (let* ((cell (cell-weak--internal-make))
+           (internal-ht (cell-weak--inner-table cell)))
+      (puthash t inner internal-ht)
+      cell)))
+
 
 (defun cell-weak-get (cell)
-  "Return Some(inner) if reference in CELL still alive, otherwise return None."
-  (let* ((gensym (make-symbol "not-found"))
-         (val (gethash t (cell-weak--inner-table cell) gensym))
-         (found (not (eq gensym val))))
-    (if found
-        (cell-option-some val)
-      (cell-option-none))))
+  "Return inner if reference in CELL still alive, otherwise return nil."
+  ;; If nil, it's a weak ref to nil.
+  ;; The stored content is never nil, so it only returns nil if
+  ;; the content was GC'd.
+  (when cell
+    (gethash t (cell-weak--inner-table cell))))
 
 (provide 'cell)
 
